@@ -1,0 +1,24 @@
+{
+  "_説明": "ランダムな運転見合わせと車両の自動離脱の設定。サイトとスプレッドシート(Apps Script)の両方がこのファイルを読みます。",
+  "randomIncident": {
+    "enabled": true,
+    "probabilityPerHour": 0.02,
+    "minMinutes": 20,
+    "maxMinutes": 90,
+    "firstHour": 5,
+    "lastHour": 23,
+    "reasons": ["車両点検", "線路内への人の立ち入り", "強風", "信号確認", "踏切の安全確認", "倒木", "急病人の救護", "大雨", "動物との衝突", "架線点検"]
+  },
+  "withdrawal": {
+    "enabled": true,
+    "inspection": { "name": "定期検査", "intervalDays": 120, "days": 2 },
+    "overhaul": { "name": "全般検査", "intervalDays": 1460, "days": 21 },
+    "accident": {
+      "probabilityPerDay": 0.0003,
+      "ageFactorPerYear": 0.04,
+      "minDays": 5,
+      "maxDays": 60,
+      "reasons": ["踏切事故による車両損傷", "主電動機の故障", "台車の亀裂", "冷房装置の故障", "ブレーキ装置の不具合", "落石との衝突", "パンタグラフの損傷", "車体の腐食修繕"]
+    }
+  }
+}

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>早菜島軌道 | 公式サイト</title>
+<meta name="description" content="早菜島軌道(さなじまきどう)公式サイト。運行情報・列車位置・時刻表・乗換案内・特急予約。">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="gh">
+  <div class="wrap gh-in">
+    <a class="brand" href="#/">
+      <img src="assets/logo.svg" alt="" width="36" height="36">
+      <span><b>早菜島軌道</b><small>SANAJIMA KIDO</small></span>
+    </a>
+    <div class="clock" id="clock"></div>
+  </div>
+  <nav class="nav">
+    <div class="wrap nav-in">
+      <a href="#/" data-nav="home">運行情報</a>
+      <a href="#/live" data-nav="live">列車位置</a>
+      <a href="#/timetable" data-nav="timetable">時刻表</a>
+      <a href="#/route" data-nav="route">乗換案内</a>
+      <a href="#/reserve" data-nav="reserve">特急予約</a>
+      <a href="#/fleet" data-nav="fleet">車両・運用</a>
+    </div>
+  </nav>
+</header>
+<main id="app"><div class="wrap loading"><span class="spinner"></span>読み込み中…</div></main>
+<footer class="gf">
+  <div class="wrap gf-in">
+    <div><b>早菜島軌道株式会社</b><br><small>※ 早菜島軌道は架空の鉄道です。実在の団体・地名とは関係ありません。</small></div>
+    <div class="gf-links"><a href="#/timetable">時刻表</a><a href="#/fleet">車両・運用</a><a href="#/admin">管理・テスト</a></div>
+  </div>
+</footer>
+<script>
+// ファイルを直接開いた(file://)場合はブラウザの制限で動かないため案内を表示
+if (location.protocol === 'file:') {
+  document.getElementById('app').innerHTML = '<div class="filewarn"><h2>ファイルを直接開いているため表示できません</h2>' +
+    '<p>このサイトはデータ(JSON)を読み込むため、ブラウザの安全上の制限により <code>index.html</code> をダブルクリックで開くと動きません。以下のどちらかで開いてください。</p>' +
+    '<ol><li><b>同梱の起動ファイルを使う</b>:Windows は <code>start-windows.bat</code>、Mac は <code>start-mac.command</code> をダブルクリック(Python が必要)。</li>' +
+    '<li><b>手動で簡易サーバーを起動</b>:このフォルダでターミナルを開き、次を実行して <code>http://localhost:8000</code> を開く。<pre>python3 -m http.server 8000</pre></li></ol>' +
+    '<p>VS Code の拡張機能「Live Server」でも開けます。GitHub Pages に公開した場合はそのまま動きます。</p></div>';
+}
+</script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
