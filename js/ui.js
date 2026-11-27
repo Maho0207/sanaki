@@ -42,7 +42,7 @@ const ANCHORS = {
   3: [['増森', 610, 330], ['莉里島', 610, 255], ['桜川口', 610, 190], ['雲平', 610, 40]],
   4: [['桜川口', 610, 190], ['桜湖', 700, 190], ['菜川', 950, 190]],
   5: [['エアロシティ', 800, 330], ['早菜空港', 950, 330]],
-  6: [['松島街道', 430, 200], ['天連町', 250, 200], ['西早菜岬', 60, 200]],
+  6: [['松島街道', 430, 200], ['天連町', 250, 200], ['西早菜岬', 70, 200], ['大潟', -90, 300], ['莉瑚島', -150, 420], ['清忠町', -185, 520], ['澪花町', -205, 615]],
   7: [['早菜中央', 430, 330], ['金岸海岸', 540, 440], ['楯山町', 540, 615]],
   8: [['天連町', 250, 200], ['天連湖', 250, 90], ['夜越温泉', 250, 40]],
   9: [['金岸海岸', 540, 440], ['坂志港', 610, 470], ['西部町', 650, 540], ['紗穂中央', 690, 600], ['澪浜', 745, 575], ['清水峡', 800, 500]],
@@ -51,6 +51,7 @@ const LABEL_POS = { // 'r' | 'l' | 't' | 'b'
   '浜川': 't', '早菜中央': 'bl', '松島街道': 'r', '赤窪': 'r', '浅山早菜口': 'b', '増森': 'b', 'エアロシティ': 'tr', '清水峡': 'r', '端浜': 'r',
   '桜川口': 'l', '雲平': 'r', '菜川': 't', '早菜空港': 't', '天連町': 'b', '西早菜岬': 't', '金岸海岸': 'l', '楯山町': 'r', '夜越温泉': 'r',
   '莉里島': 'l', '桜湖': 't', '松野木宿': 'r', '天連湖': 'r', '坂志港': 'tr', '西部町': 'l', '紗穂中央': 'b', '澪浜': 'b',
+  '大潟': 'r', '莉瑚島': 'r', '清忠町': 'r', '澪花町': 'r', '西ノ島中央': 't',
 };
 let GEO = null;
 export function mapGeometry() {
@@ -78,9 +79,11 @@ export function mapXY(L, fidx) {
 }
 export function networkMap({ trains = [], lineStatus = {} } = {}) {
   const g = mapGeometry();
-  let s = `<svg class="netmap" viewBox="0 0 1010 650" role="img" aria-label="早菜島軌道 路線図">`;
+  let s = `<svg class="netmap" viewBox="-260 0 1270 650" role="img" aria-label="早菜島軌道 路線図">`;
   s += `<defs><pattern id="sea" width="14" height="14" patternUnits="userSpaceOnUse"><path d="M0 7 Q3.5 4 7 7 T14 7" fill="none" stroke="currentColor" stroke-opacity=".07"/></pattern></defs>`;
-  s += `<rect x="0" y="0" width="1010" height="650" fill="url(#sea)"/>`;
+  s += `<rect x="-260" y="0" width="1270" height="650" fill="url(#sea)"/>`;
+  s += `<path class="island" d="M-40 230 Q0 150 120 160 Q160 210 110 250 Q40 280 0 330 Q-60 420 -120 520 Q-150 640 -230 630 Q-255 560 -240 470 Q-215 380 -150 330 Q-90 280 -40 230Z"/>`;
+  s += `<text class="seaname" x="-200" y="300">西ノ島</text><text class="seaname" x="700" y="120">早菜島</text>`;
   s += `<path class="island" d="M40 170 Q60 20 250 20 L460 15 Q640 10 700 30 Q980 60 985 200 Q990 330 960 360 Q860 380 840 450 Q850 640 760 635 Q600 645 520 635 Q470 635 420 600 Q300 600 210 590 Q120 560 120 450 Q60 400 50 330 Q30 250 40 170Z"/>`;
   for (const l of D.lines) {
     const pts = g.pos[l.id];
@@ -110,10 +113,10 @@ export function networkMap({ trains = [], lineStatus = {} } = {}) {
     s += `<a href="#/train/${encodeURIComponent(tr.n)}"><circle class="mt ${typeClass(tr.k)}${ef.held ? ' held' : ''}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4"><title>${esc(tr.n)} ${esc(tr.k)} ${esc(dest(tr))}行</title></circle></a>`;
   }
   // line number badges
-  const badgePos = { 1: [80, 330], 2: [230, 560], 3: [610, 40], 4: [950, 190], 5: [950, 330], 6: [60, 200], 7: [540, 615], 8: [250, 40], 9: [650, 540] };
+  const badgePos = { 1: [80, 330], 2: [230, 560], 3: [610, 40], 4: [950, 190], 5: [950, 330], 6: [-205, 615], 7: [540, 615], 8: [250, 40], 9: [650, 540] };
   for (const l of D.lines) {
     const [x, y] = badgePos[l.id];
-    const off = { 1: [-22, 0], 2: [-22, -14], 3: [-22, 0], 4: [22, 0], 5: [22, 0], 6: [0, 22], 7: [-22, 0], 8: [-22, 0], 9: [22, 0] }[l.id];
+    const off = { 1: [-22, 0], 2: [-22, -14], 3: [-22, 0], 4: [22, 0], 5: [22, 0], 6: [-24, -6], 7: [-22, 0], 8: [-22, 0], 9: [22, 0] }[l.id];
     s += `<g class="mbadge"><rect x="${x + off[0] - 11}" y="${y + off[1] - 11}" width="22" height="22" rx="5" fill="${l.color}"/><text x="${x + off[0]}" y="${y + off[1] + 5}" text-anchor="middle">${l.id}</text></g>`;
   }
   s += `</svg>`;

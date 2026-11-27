@@ -1,7 +1,8 @@
 // 駅時刻表
-import { D, yomiOf, now, fmt, stName, findStation, departures, isCancelled, effTime, lineOf, typeClass, trainOps } from './core.js';
+import { D, yomiOf, destsOf, now, fmt, stName, findStation, departures, isCancelled, expectedAt, incidentsKnown, lineOf, typeClass, trainOps } from './core.js';
 import { esc, $, $$, lineBadge, typeBadge, dest, ensureStationDatalist, stationInput } from './ui.js';
 import { setTicker } from './app.js';
+import { isOneman } from './fares.js';
 
 export function pageTimetable(el, station, query) {
   const sid = findStation(station);
@@ -38,7 +39,7 @@ export function pageTimetable(el, station, query) {
         <div class="card-h"><h2>時刻表</h2></div>
         <div class="tabs small">${keys.map((k) => `<a href="#/timetable/${encodeURIComponent(stName(sid))}?g=${k}" class="${k === sel ? 'on' : ''}">${esc(dirLabel(groups.get(k)))}</a>`).join('')}</div>
         ${g ? hourGrid(g.list, t.date) : '<p class="muted">この駅から発車する列車はありません。</p>'}
-        <p class="legend small">${['特急', '快速', '急行', '準急', '各停'].map((k) => `<span class="tm ${typeClass(k)}">${k}</span>`).join('')} <span class="muted">数字の下は行先の頭文字。<s>取消線</s>は運休。</span></p>
+        <p class="legend small">${['特急', '快速', '急行', '準急', '各停'].map((k) => `<span class="tm ${typeClass(k)}">${k}</span>`).join('')} <span class="muted">数字の下は行先の頭文字(併結列車は「・」で併記)。<s>取消線</s>は運休。</span></p>
       </section>
     </div>
   </div>`;
@@ -48,11 +49,12 @@ export function pageTimetable(el, station, query) {
     const up = [];
     for (const d of deps) {
       if (d.arrOnly) continue;
-      const e0 = effTime(d.tr, t2.date, t2.min);
-      const affected = e0.eff && d.t >= e0.eff.hold;
-      const ef = affected ? e0 : { delay: 0, held: false, t: t2.min };
-      const real = affected ? (e0.held ? Infinity : d.t + e0.delay) : d.t;
+      const e = isCancelled(d.tr.n, t2.date) ? null : expectedAt(d.tr, t2.date, d.i);
+      const real = e ? e.d : d.t;
       if (real < t2.min - 0.5) continue;
+      // 見合わせ区間に向かう列車で、まだ発車できないもの
+      const blockedNow = e && e.delay >= 1 && incidentsKnown(t2.date).some((i) => i.line === d.L && t2.min >= i.start && t2.min < i.end);
+      const ef = { delay: e ? e.delay : 0, held: !!blockedNow && real > t2.min };
       up.push({ d, ef, real });
       if (up.length >= 10) break;
     }
@@ -61,9 +63,9 @@ export function pageTimetable(el, station, query) {
       const ops = trainOps(d.tr.n, t2.date);
       let st = '';
       if (cx) st = '<span class="pill stop">運休</span>';
-      else if (ef.held) st = '<span class="pill stop">見合わせ</span>';
-      else if (ef.delay >= 1) st = `<span class="pill delay">${Math.round(ef.delay)}分遅れ</span>`;
-      return `<tr class="${cx ? 'cx' : ''}"><td class="tnum">${fmt(d.t)}</td><td>${typeBadge(d.tr.k, d.tr.fast)}</td><td><a href="#/train/${encodeURIComponent(d.tr.n)}">${esc(dest(d.tr))}行</a><small class="muted"> ${esc(d.tr.n)}${ops.reduced ? ' 減車' : ''}</small></td><td>${lineBadge(d.L)}</td><td>${st}</td></tr>`;
+      else if (ef.held) st = `<span class="pill stop">見合わせ</span>${ef.delay >= 1 ? ` <small class="muted">${fmt(d.t + ef.delay)}頃</small>` : ''}`;
+      else if (ef.delay >= 1) st = `<span class="pill delay">${Math.round(ef.delay)}分遅れ</span> <small class="muted">${fmt(d.t + ef.delay)}発見込み</small>`;
+      return `<tr class="${cx ? 'cx' : ''}"><td class="tnum">${fmt(d.t)}</td><td>${typeBadge(d.tr.k, d.tr.fast)}</td><td><a href="#/train/${encodeURIComponent(d.tr.n)}">${esc(destsOf(d).join('・'))}行</a><small class="muted"> ${esc([d.tr.n, ...(d.with || []).map((p) => p.n)].join('+'))}${ops.reduced ? ' 減車' : ''}</small>${isOneman(d.tr) ? ' <span class="oneman sm">ワンマン</span>' : ''}${d.with?.length ? `<br><small class="muted">${d.with.map((p, k) => `${esc(dest(p))}行は<a href="#/train/${encodeURIComponent(p.n)}">${esc(p.n)}</a>(${esc(d.until[k])}${d.until[k] === dest(p) ? 'まで併結' : 'で分割'})`).join('・')}</small>` : ''}</td><td>${lineBadge(d.L)}</td><td>${st}</td></tr>`;
     }).join('')}</tbody></table>` : '<p class="muted">本日の発車は終了しました。</p>';
   };
   drawNext();
@@ -81,7 +83,7 @@ function hourGrid(list, date) {
   const hours = [...byH.keys()].sort((a, b) => a - b);
   return `<table class="hgrid"><tbody>${hours.map((h) => `<tr><th>${h % 24}</th><td>${byH.get(h).map((d) => {
     const cx = isCancelled(d.tr.n, date);
-    return `<a class="tm ${typeClass(d.tr.k)}${cx ? ' cx' : ''}" href="#/train/${encodeURIComponent(d.tr.n)}" title="${esc(d.tr.k)} ${esc(dest(d.tr))}行 ${esc(d.tr.n)}">${String(Math.floor(d.t % 60)).padStart(2, '0')}<small>${esc(dest(d.tr)[0])}</small></a>`;
+    return `<a class="tm ${typeClass(d.tr.k)}${cx ? ' cx' : ''}" href="#/train/${encodeURIComponent(d.tr.n)}" title="${esc(d.tr.k)} ${esc(destsOf(d).join('・'))}行 ${esc([d.tr.n, ...(d.with || []).map((p) => p.n)].join('+'))}">${String(Math.floor(d.t % 60)).padStart(2, '0')}<small>${esc(destsOf(d).map((x) => x[0]).join('・'))}</small></a>`;
   }).join('')}</td></tr>`).join('')}</tbody></table>`;
 }
 

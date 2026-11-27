@@ -1,8 +1,8 @@
 // 早菜島軌道 — ルーター・ホーム・列車位置・列車詳細
 import { CONFIG } from './config.js';
 import {
-  D, loadAll, now, fmt, stName, lineOf, lineStatus, activeTrains, incidentsKnown, incidentSection,
-  trainOps, trainNowState, isCancelled, seatFormation, OP_TYPE_NAME, weekday, lineTerminal, typeClass,
+  D, loadAll, now, fmt, stName, lineOf, lineStatus, activeTrains, incidentsKnown, incidentSection, incidentCause,
+  trainOps, trainNowState, isCancelled, seatFormation, trackReady, OP_TYPE_NAME, weekday, lineTerminal, typeClass,
 } from './core.js';
 import { esc, $, $$, lineBadge, typeBadge, trainLink, dest, orig, networkMap, ensureStationDatalist, stationInput, minutesLabel } from './ui.js';
 import { pageTimetable } from './timetable.js';
@@ -10,6 +10,8 @@ import { pageRoute } from './route.js';
 import { pageReserve } from './reserve.js';
 import { pageFleet } from './fleet.js';
 import { pageAdmin } from './admin.js';
+import { pageFares, isOneman } from './fares.js';
+import { pageStaff } from './staff.js';
 
 const app = $('#app');
 let timer = null;
@@ -25,6 +27,8 @@ const ROUTES = [
   [/^#\/reserve(?:\/(\w+))?(?:\?(.*))?$/, pageReserve, 'reserve'],
   [/^#\/fleet(?:\/([^?]+))?(?:\?(.*))?$/, pageFleet, 'fleet'],
   [/^#\/admin$/, pageAdmin, 'admin'],
+  [/^#\/fares(?:\?(.*))?$/, pageFares, 'fares'],
+  [/^#\/staff(?:\/(.+))?$/, pageStaff, 'staff'],
 ];
 
 function render() {
@@ -58,8 +62,9 @@ function statusRows(date, min) {
     const s = lineStatus(l.id, date, min);
     const [label, cls] = LV[s.level];
     let detail = '';
-    if (s.level === 'stop') detail = s.incs.map((i) => { const [a, b] = incidentSection(i); return `${esc(i.reason)}のため、${esc(a)}〜${esc(b)}駅間で運転を見合わせています。運転再開見込み ${isFinite(i.end) ? fmt(i.end) + '頃' : '未定'}`; }).join('<br>');
-    else if (s.level === 'delay') detail = s.incs.map((i) => { const [a, b] = incidentSection(i); return `${fmt(i.start)}頃に${esc(a)}〜${esc(b)}駅間で発生した${esc(i.reason)}の影響で、一部列車に遅れが出ています。`; }).join('<br>');
+    const cause = (i) => i.train ? `<a href="#/train/${encodeURIComponent(i.train)}">${esc(i.train)}列車</a>の${esc(i.reason)}` : esc(i.reason);
+    if (s.level === 'stop') detail = s.incs.map((i) => { const [a, b] = incidentSection(i); return `${cause(i)}のため、${esc(a)}〜${esc(b)}駅間で運転を見合わせています。運転再開見込み ${isFinite(i.end) ? fmt(i.end) + '頃' : '未定'}`; }).join('<br>');
+    else if (s.level === 'delay') detail = s.incs.map((i) => { const [a, b] = incidentSection(i); return `${fmt(i.start)}頃に${esc(a)}〜${esc(b)}駅間で発生した${cause(i)}の影響で、一部列車に遅れが出ています。`; }).join('<br>');
     else if (s.level === 'partial') detail = `車両運用の都合により、本日${s.cancelled}本の列車を運休しています。`;
     return { l, s, label, cls, detail };
   });
@@ -101,7 +106,7 @@ function pageHome(el) {
       <a class="tile" href="#/timetable"><span class="ic">🕒</span><b>駅時刻表</b><small>駅ごとの発車時刻と列車の停車駅</small></a>
       <a class="tile" href="#/route"><span class="ic">⇄</span><b>乗換案内</b><small>最短・最速の経路を検索</small></a>
       <a class="tile" href="#/reserve"><span class="ic">🎫</span><b>特急予約</b><small>全席指定の特急を座席指定で予約</small></a>
-      <a class="tile" href="#/fleet"><span class="ic">🚃</span><b>車両・運用</b><small>今日どの編成がどの列車に入るか</small></a>
+      <a class="tile" href="#/fares"><span class="ic">💴</span><b>運賃・ワンマン運賃表</b><small>運賃計算と運賃表のダウンロード</small></a>
     </section>
     <section class="card">
       <div class="card-h"><h2>お知らせ</h2></div>
@@ -181,20 +186,32 @@ function pageTrain(el, n) {
     const ns = trainNowState(tr, t.date);
     const lines = [...new Set(tr.stops.map((s) => s.L))];
     let stateHtml = '';
+    const own = incidentsKnown(t.date).filter((i) => i.train === tr.n);
+    const ownHtml = own.map((i) => { const [a, b] = incidentSection(i); return `<div class="alert stop">${fmt(i.start)}頃、この列車で<b>${esc(i.reason)}</b>が発生し、${esc(a)}〜${esc(b)}駅間で運転を見合わせ${t.min < i.end ? 'ています' : 'ました'}(再開${t.min < i.end ? '見込み' : ''} ${isFinite(i.end) ? fmt(i.end) : '未定'})。</div>`; }).join('');
     if (ns.status === 'cancel') stateHtml = `<div class="alert stop">この列車は本日、車両(編成)不足のため<b>運休</b>です。</div>`;
-    else if (ns.status === 'held') stateHtml = `<div class="alert stop">${esc(ns.ef.eff.inc.reason)}のため運転を見合わせています(${Math.round(ns.ef.delay)}分経過)。</div>`;
-    else if (ns.ef && ns.ef.delay >= 1) stateHtml = `<div class="alert delay">約${Math.round(ns.ef.delay)}分遅れで運転しています。</div>`;
+    else if (ns.status === 'held') stateHtml = `<div class="alert stop">運転見合わせのため停車しています(現在 約${Math.round(ns.ef.delay)}分遅れ)。</div>`;
+    else if (ns.ef && ns.ef.delay >= 1) stateHtml = `<div class="alert delay">約${Math.round(ns.ef.delay)}分遅れで運転しています${ns.status === 'before' ? '(始発駅の発車が遅れる見込み)' : ''}。行き違い・続行列車の遅れや折返しの影響を含みます。</div>`;
+    // 現在位置(シミュレーション上の経路点 → 時刻表の停車駅番号)
     let cur = -1, curFrac = null;
-    if (ns.p) { cur = ns.p.at ?? ns.p.from; if (ns.p.at == null) curFrac = true; }
+    const act = ns.act; const A = act ? act.stops : [];
+    const siBefore = (k) => { for (let q = k; q >= 0; q--) if (A[q] && A[q].si >= 0) return A[q].si; return 0; };
+    if (ns.p) {
+      if (ns.p.at != null && A[ns.p.at]?.si >= 0) cur = A[ns.p.at].si;
+      else { cur = siBefore(ns.p.at ?? ns.p.from); curFrac = true; }
+    }
     const done = ns.status === 'done';
-    const delay = ns.ef?.delay || 0;
+    const exp = new Map(A.filter((x) => x.si >= 0).map((x) => [x.si, x]));
     const rows = tr.stops.map((s, i) => {
+      if (s.pass) return '';
       const passed = done || (cur >= 0 && (i < cur || (i === cur && curFrac)));
       const here = cur === i && !curFrac;
       const between = cur === i && curFrac;
-      const ex = delay >= 1 && !passed ? `<small class="late">→ ${fmt(s.d + delay)}</small>` : '';
+      const e = exp.get(i);
+      const lateD = e ? e.d - s.d : 0, lateA = e ? e.a - s.a : 0;
+      const last = i === tr.stops.length - 1;
+      const ex = !passed && e && (last ? lateA : lateD) >= 1 ? `<small class="late">→ ${fmt(last ? e.a : e.d)}${last ? '着' : '発'}見込み</small>` : '';
       return `<li class="${passed ? 'passed' : ''}${here ? ' here' : ''}${s.op ? ' opstop' : ''}${s.b ? ' coupled' : ''}">
-        <span class="tt">${i > 0 && s.a !== s.d ? `<small>${fmt(s.a)}着</small>` : ''}${i === tr.stops.length - 1 ? fmt(s.a) + '着' : fmt(s.d) + (i === 0 ? '発' : '')}${ex}</span>
+        <span class="tt">${i > 0 && s.a !== s.d ? `<small>${fmt(s.a)}着</small>` : ''}${last ? fmt(s.a) + '着' : fmt(s.d) + (i === 0 ? '発' : '')}${ex}</span>
         <span class="sd" style="--lc:${lineOf(s.L).color}"></span>
         <span><a href="#/timetable/${encodeURIComponent(stName(s.sid))}">${esc(stName(s.sid))}</a>${s.op ? ' <small class="muted">運転停車</small>' : ''}${s.th ? ' <small class="muted">(直通)</small>' : s.b ? ' <small class="muted">(併結)</small>' : ''}${here ? '<span class="nowtag">停車中</span>' : ''}</span>
       </li>${between ? '<li class="runningtag"><span>走行中 ▼</span></li>' : ''}`;
@@ -204,10 +221,10 @@ function pageTrain(el, n) {
       <p class="crumb"><a href="#/timetable">時刻表</a> › 列車詳細</p>
       <div class="train-h">
         ${typeBadge(tr.k, tr.fast)}
-        <h1>${esc(tr.n)} <small>${esc(dest(tr))}行</small></h1>
+        <h1>${esc(tr.n)} <small>${esc(dest(tr))}行</small></h1>${isOneman(tr) ? '<span class="oneman" title="ワンマン運転">ワンマン</span>' : ''}
         <div class="lines">${lines.map((x) => lineBadge(x, true)).join('')}</div>
       </div>
-      ${stateHtml}
+      ${ownHtml}${stateHtml}
       <div class="grid2">
         <div class="card">
           <h3>停車駅</h3>
@@ -246,6 +263,7 @@ function pageTrain(el, n) {
   if (location.protocol === 'file:') return; // index.html の案内を表示
   try {
     await loadAll();
+    await trackReady;
   } catch (e) {
     app.innerHTML = `<div class="wrap"><p class="err">データの読み込みに失敗しました。ローカルで開く場合は簡易サーバー(例: <code>python3 -m http.server</code>)で表示してください。</p></div>`;
     return;

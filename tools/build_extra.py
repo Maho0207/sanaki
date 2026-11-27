@@ -26,24 +26,35 @@ dump('lines.json', [{'id': l['id'], 'name': l['name'], 'sub': l['sub'], 'n': len
 # ------------------------------------------------------------ キロ程・読み
 if args.km:
     wb = openpyxl.load_workbook(args.km, data_only=True, read_only=True)
-    dist, yomi = {}, {}
+    dist, yomi, passing = {}, {}, {}
     for l in net['lines']:
         ws = next(w for w in wb.worksheets if w.title.startswith(f"{l['id']}号線"))
-        rows = []
-        for r in ws.iter_rows(min_row=2, max_col=4, values_only=True):
-            if r[1] is None:
-                if rows: break
-                continue
-            rows.append(r)
+        rows = [r for r in ws.iter_rows(min_row=2, max_col=10, values_only=True)
+                if isinstance(r[0], (int, float)) and r[1]]          # 駅番号のある行だけ(注記の行は除く)
         names = [r[1] for r in rows]
         ours = [net['stations'][s] for s in l['stations']]
         if names != ours:
-            raise SystemExit(f"{l['id']}号線の駅名・駅順がダイヤと一致しません")
+            raise SystemExit(f"{l['id']}号線の駅名・駅順がダイヤと一致しません: " + str([x for x in ours if x not in names][:5]) + str([x for x in names if x not in ours][:5]))
         dist[str(l['id'])] = [float(r[3]) for r in rows]
+        passing[str(l['id'])] = [i for i, r in enumerate(rows) if r[9] and '★' in str(r[9])]
         for r in rows:
             if r[2]: yomi[r[1]] = r[2]
     dump('distances.json', dist); dump('stations.json', yomi)
-    print('distances / stations OK')
+    # 線路(単線・複線・複々線)と待避・行き違いのできる駅(★)
+    track = {}
+    sh = next((w for w in wb.worksheets if w.title == 'Sheet1'), None)
+    if sh:
+        for r in sh.iter_rows(min_row=2, max_col=5, values_only=True):
+            if not isinstance(r[0], (int, float)) or not r[1]: continue
+            L = int(r[0]); sts = [net['stations'][x] for x in next(l for l in net['lines'] if l['id'] == L)['stations']]
+            if r[1] == '全線': a_, b_ = 0, len(sts) - 1
+            else:
+                x, y = re.split(r'[～~〜]', r[1])
+                a_, b_ = sorted((sts.index(x.strip()), sts.index(y.strip())))
+            track.setdefault(str(L), []).append({'from': a_, 'to': b_, 'tracks': {'単線': 1, '複線': 2, '複々線': 4}.get(r[2], 2),
+                                                 'maxLtd': r[3], 'maxLocal': r[4]})
+    dump('track.json', {'passing': passing, 'sections': track})
+    print('distances / stations / track OK', {k: len(v) for k, v in passing.items()})
 
 # ------------------------------------------------------------ 座席配列
 SEAT = re.compile(r'^\d+[A-Z]$')
@@ -144,11 +155,11 @@ if args.formations:
         n += SPARE_T.get(s_, 0)
         for i in range(1, n + 1):
             forms.append({'id': f'{base + i}F', 'type': 'T', 'series': s_, 'cars': cars, 'built': BUILT_T.get(s_, 2000) + (i - 1) // 4,
-                          'status': '在籍', 'pin': '', 'note': maps[s_]['nick']})
+                          'depot': '', 'status': '在籍', 'pin': '', 'note': maps[s_]['nick']})
     for t, (sname, base, cars, y0, span, step) in {'B': ('7000系', 7000, 4, 1986, 40, 7), 'C': ('9000系', 9000, 2, 1990, 26, 5), 'L': ('ED50形', 0, 2, 1978, 6, 3)}.items():
         for i in range(1, need[t] + SPARE[t] + 1):
             forms.append({'id': f'{base + i}F' if t != 'L' else f'ED50-{i}', 'type': t, 'series': sname, 'cars': cars,
-                          'built': y0 + ((i - 1) * step) % span, 'status': '在籍', 'pin': '', 'note': ''})
+                          'built': y0 + ((i - 1) * step) % span, 'depot': '', 'status': '在籍', 'pin': '', 'note': ''})
     with open(os.path.join(ROOT, 'data', 'formations.json'), 'w', encoding='utf-8') as f:
         f.write('[\n' + ',\n'.join(json.dumps(x, ensure_ascii=False) for x in forms) + '\n]\n')
     print('formations', len(forms), dict(zip(series, per)))

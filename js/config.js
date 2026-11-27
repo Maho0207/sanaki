@@ -6,7 +6,7 @@ export const CONFIG = {
 
   // Google Apps Script の「ウェブアプリ」URL(gas/Code.gs をデプロイして取得)
   // 空のままだと、特急予約はこの端末だけに保存される「デモモード」で動きます。
-  gasUrl: 'https://script.google.com/macros/s/AKfycbw83sxu5zCfLLi8JxWbWBuon7dv0KDbUvA7Pdj4vVwfZQe8Nah0ibzFroxJQCr5RmM4/exec',
+  gasUrl: 'https://script.google.com/macros/s/AKfycbyCeM_ZSniHBWZlBmuFqjtEaNac-npwil9lGBFfUO0QQPG05H_QVnlBn3elFtzvR3a0/exec',
 
   // ランダムな運転見合わせ・車両の自動離脱(検査・事故)の設定は data/sim.json にあります
   // (スプレッドシートの Apps Script も同じファイルを読みます)

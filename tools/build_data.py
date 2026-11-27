@@ -42,7 +42,34 @@ def main():
 
     lines = {}
     segments = defaultdict(list)   # train number -> list of segments
-    columns = []                   # (line, dir, header, partners, type, cars, note, stops)
+    columns = []
+
+    # 0) 路線の駅順(下りシート)と接続駅、キロ程(あれば通過駅の時刻推定に使う)
+    line_st = {}
+    for name in sheets:
+        if not name.endswith('下り'): continue
+        rows = list(wb[name].iter_rows(values_only=True))
+        line_st[int(name[0])] = list(OrderedDict.fromkeys(r[0] for r in rows[7:] if r[0] is not None))
+    st_lines = defaultdict(set)
+    for L, sts in line_st.items():
+        for x in sts: st_lines[x].add(L)
+    junction = {x for x, ls in st_lines.items() if len(ls) > 1}
+    km = {}
+    kmx = os.path.join(ROOT, 'tools', 'kilometers.xlsx')
+    if os.path.exists(kmx):
+        kwb = openpyxl.load_workbook(kmx, data_only=True, read_only=True)
+        for L in line_st:
+            ws = next((w for w in kwb.worksheets if w.title.startswith(f'{L}号線')), None)
+            if not ws: continue
+            for r in ws.iter_rows(min_row=2, max_col=4, values_only=True):
+                if isinstance(r[0], (int, float)) and r[1] and r[3] is not None:
+                    km[(L, r[1])] = float(r[3])
+    def dist(x, y):
+        """隣り合う2駅(共通の路線上)の距離"""
+        for L in st_lines[x] & st_lines[y]:
+            if (L, x) in km and (L, y) in km: return abs(km[(L, x)] - km[(L, y)])
+            return abs(line_st[L].index(x) - line_st[L].index(y))
+        return 1.0
 
     for name in sheets:
         ws = wb[name]
@@ -51,19 +78,16 @@ def main():
         down = name.endswith('下り')
         title = rows[0][0]
         m = re.match(r'(\d号線)\s+(\S+)', title)
-        # station rows
-        st_rows = []
-        for r in rows[7:]:
-            if r[0] is None:
-                continue
-            st_rows.append((r[0], r[1]))
+        st_rows = [(r[0], r[1], i) for i, r in enumerate(rows) if i >= 7 and r[0] is not None]
         if down:
-            order = list(OrderedDict.fromkeys(s for s, _ in st_rows))
-            lines[lno] = {'id': lno, 'name': m.group(1), 'sub': m.group(2),
-                          'color': LINE_COLORS[lno],
-                          'stations': [station_id(s) for s in order]}
-        ncol = len(rows[1])
-        for c in range(2, ncol):
+            lines[lno] = {'id': lno, 'name': m.group(1), 'sub': m.group(2), 'color': LINE_COLORS[lno],
+                          'stations': [station_id(x) for x in line_st[lno]]}
+        # 駅ごとに行をまとめる(着・発の2行がある駅)
+        groups = []
+        for st, kind, i in st_rows:
+            if groups and groups[-1][0] == st: groups[-1][1].append((kind, i))
+            else: groups.append((st, [(kind, i)]))
+        for c in range(2, len(rows[1])):
             hdr = rows[1][c]
             if hdr is None:
                 continue
@@ -78,59 +102,100 @@ def main():
             typ = typ.split('\n')[0]
             cars = str(rows[5][c] or '')
             note = rows[6][c] or ''
-            stops = []
-            for r in rows[7:]:
-                if r[0] is None:
-                    continue
-                st, kind = r[0], r[1]
-                v = r[c]
-                t = parse_time(v)
-                if t is None:
-                    continue
-                minute, op = t
-                if stops and stops[-1]['st'] == st:
-                    s = stops[-1]
+            # 空欄の駅で区切って「走る区間」ごとに分ける(1列に離れた2区間が書かれている列車がある)
+            runs, cur = [], []
+            for st, rws in groups:
+                vals = [(kind, rows[i][c]) for kind, i in rws]
+                timed = [(kind, parse_time(v)) for kind, v in vals if parse_time(v)]
+                passing = any(str(v).strip() == 'レ' for _, v in vals if v is not None)
+                if timed:
+                    e = {'st': st, 'a': None, 'd': None, 'op': False, 'pass': False}
+                    for kind, (minute, op) in timed:
+                        if kind == '着': e['a'] = minute
+                        elif kind == '発': e['d'] = minute
+                        else: e['a'] = e['d'] = minute
+                        if op: e['op'] = True
+                    if e['a'] is None: e['a'] = e['d']
+                    if e['d'] is None: e['d'] = e['a']
+                    cur.append(e)
+                elif passing:
+                    cur.append({'st': st, 'a': None, 'd': None, 'op': True, 'pass': True})
                 else:
-                    s = {'st': st, 'a': None, 'd': None, 'op': False}
-                    stops.append(s)
-                if kind == '着':
-                    s['a'] = minute
-                elif kind == '発':
-                    s['d'] = minute
-                else:
-                    s['a'] = s['d'] = minute
-                if op:
-                    s['op'] = True
-            for s in stops:
-                if s['a'] is None: s['a'] = s['d']
-                if s['d'] is None: s['d'] = s['a']
-            if not stops:
-                continue
+                    if any(not x['pass'] for x in cur): runs.append(cur)
+                    cur = []
+            if any(not x['pass'] for x in cur): runs.append(cur)
             col = {'line': lno, 'down': down, 'num': num, 'partners': partners, 'orig': rows[3][c], 'dest': rows[4][c],
-                   'type': typ, 'fast': fastest, 'cars': cars, 'note': note, 'stops': stops}
-            columns.append(col)
-            segments[num].append({'line': lno, 'stops': stops, 'borrowed': False, 'col': col})
+                   'type': typ, 'fast': fastest, 'cars': cars, 'note': note}
+            any_run = False
+            for run in runs:
+                # 通過駅は「接続駅」だけ残す(路線をまたぐ区間の境目)。区間の外側の通過駅は削る
+                run = [x for x in run if not x['pass'] or x['st'] in junction]
+                if len(run) < 2:
+                    continue   # 接続駅だけの1駅の欄(他の区間と重複)
+                for x in run: x['L'] = lno
+                segments[num].append({'line': lno, 'stops': run, 'borrowed': False, 'col': col})
+                any_run = True
+            if any_run:
+                columns.append(col)
+
+    def seg_key(g):
+        t = next((x['d'] for x in g['stops'] if x['d'] is not None), 0)
+        return t
 
     def merge(segs):
-        """区間リストを時刻順(深夜をまたぐ場合も考慮)につなげて停車駅の列にする"""
-        segs_sorted = sorted(segs, key=lambda g: g['stops'][0]['d'])
+        """区間をつなぐ: 時刻順に並べたうえで、前の区間の終点から始まる区間を優先してつなぐ"""
+        segs_sorted = sorted(segs, key=seg_key)
         if len(segs_sorted) > 1:
-            ts = [g['stops'][0]['d'] for g in segs_sorted]
+            ts = [seg_key(g) for g in segs_sorted]
             gaps = [(ts[(i + 1) % len(ts)] - ts[i]) % 1440 for i in range(len(ts))]
             cut = max(range(len(ts)), key=lambda i: gaps[i])
             segs_sorted = segs_sorted[cut + 1:] + segs_sorted[:cut + 1]
+        chain = []
+        rest = list(segs_sorted)
+        while rest:
+            nxt = None
+            if chain:
+                last = chain[-1]['stops'][-1]['st']
+                nxt = next((g for g in rest if g['stops'][0]['st'] == last), None)
+            if nxt is None: nxt = rest[0]
+            rest.remove(nxt); chain.append(nxt)
         it = []
-        for seg in segs_sorted:
+        for seg in chain:
             for k, st in enumerate(seg['stops']):
-                if it and it[-1]['st'] == st['st']:
-                    if k == 0:
-                        it[-1]['d'] = st['d']   # 接続駅: 前の区間の着 + 次の区間の発
-                    continue
                 e = dict(st)
                 e['L'] = st.get('L', seg['line'])
                 e['b'] = seg['borrowed'] or st.get('b', False)
                 e['th'] = seg.get('thru', False) or st.get('th', False)
+                if it and it[-1]['st'] == e['st']:
+                    p = it[-1]
+                    if p['pass'] and not e['pass']:
+                        p.update(a=e['a'], d=e['d'], op=e['op']); p['pass'] = False
+                    elif not e['pass']:
+                        # 着は先の区間(その列車が実際に着いた時刻)、発は遅い方(併結・分割の待ち合わせ)
+                        if p['a'] is None: p['a'] = e['a']
+                        p['d'] = max(x for x in (p['d'], e['d'], p['a']) if x is not None)
+                        p['op'] = p['op'] and e['op']
+                        if not e['b']: p['b'] = False
+                        if not e['th']: p['th'] = False
+                    continue
                 it.append(e)
+        # 先頭・末尾の通過駅は除く
+        while it and it[0]['pass']: it.pop(0)
+        while it and it[-1]['pass']: it.pop()
+        # 通過した接続駅の時刻をキロ程で按分
+        pos = [0.0]
+        for x, y in zip(it, it[1:]): pos.append(pos[-1] + dist(x['st'], y['st']))
+        for i, e in enumerate(it):
+            if e['a'] is not None: continue
+            j = i - 1
+            while j >= 0 and it[j]['d'] is None: j -= 1
+            k = i + 1
+            while k < len(it) and it[k]['a'] is None: k += 1
+            if j < 0 or k >= len(it): continue
+            t0, t1 = it[j]['d'], it[k]['a']
+            if t1 < t0 - 720: t1 += 1440
+            f = (pos[i] - pos[j]) / ((pos[k] - pos[j]) or 1)
+            e['a'] = e['d'] = round(t0 + (t1 - t0) * f)
         return it
 
     # 1) 各列車の自列車区間(複数路線にまたがる場合も1本につなぐ)
@@ -233,8 +298,8 @@ def main():
                           set(s['main'] for s in segs if s['borrowed'] and not s.get('thru')))
         flat = []
         for e in it:
-            flag = (1 if e['op'] else 0) | (2 if e['b'] else 0) | (4 if e.get('th') else 0)
-            flat += [station_id(e['st']), e['a'], e['d'], e['L'] * 8 + flag]
+            flag = (1 if e['op'] else 0) | (2 if e['b'] else 0) | (4 if e.get('th') else 0) | (8 if e.get('pass') else 0)
+            flat += [station_id(e['st']), e['a'], e['d'], e['L'] * 16 + flag]
         exp_dest = {g['col']['dest'] for g in own if g['col']['dest']}
         exp_orig = {g['col']['orig'] for g in own if g['col']['orig']}
         if it[-1]['st'] not in exp_dest or it[0]['st'] not in exp_orig:

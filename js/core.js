@@ -1,6 +1,8 @@
 // 早菜島軌道 — データ・時刻・運用・見合わせ・位置・経路探索
 import { CONFIG } from './config.js';
-import { rng, randomIncidentsFor, withdrawalsFor, nextInspection } from './sim.js';
+import { rng, randomIncidentsFor, withdrawalsFor, nextInspection, lineRuns } from './sim.js';
+import { actualTrain, trackReady } from './opsim.js';
+export { actualTrain };
 export { rng, nextInspection };
 
 export const TYPE_ORDER = ['特急', '快速', '急行', '準急', '各停'];
@@ -17,7 +19,7 @@ export const D = {
   ready: false, lines: [], lineById: {}, stations: [], stationId: {}, stationLines: [],
   lineIdx: {}, trains: [], trainByN: {}, ops: [], opById: {}, opsByTrain: {},
   formationsRepo: [], formationsRemote: null, incidentsRepo: [], incidentsRemote: [], news: [],
-  remoteOk: false, lineKm: {}, fareTable: [], ltdTable: [], seatmaps: {}, yomi: {}, sim: {},
+  remoteOk: false, lineKm: {}, fareTable: [], ltdTable: [], seatmaps: {}, yomi: {}, sim: {}, rotationText: '',
 };
 
 async function getText(url) {
@@ -45,9 +47,12 @@ export async function loadAll() {
     getJSON('data/seatmaps.json', {}), getJSON('data/stations.json', {}),
   ]);
   D.sim = await getJSON('data/sim.json', {});
+  D.oneman = await getJSON('data/oneman.json', { areas: [] });
+  try { D.rotationText = await getText('data/rotations.txt'); } catch { D.rotationText = ''; }
   D.seatmaps = seatmaps; D.yomi = yomi;
   D.fareTable = parseCsv(fareCsv); D.ltdTable = parseCsv(ltdCsv);
   for (const l of net.lines) D.lineKm[l.id] = dist[l.id] || l.stations.map((_, i) => i * 2);
+  D.raw = net;
   D.stations = net.stations;
   net.stations.forEach((s, i) => (D.stationId[s] = i));
   D.stationLines = net.stations.map(() => []);
@@ -60,7 +65,7 @@ export async function loadAll() {
     const st = [];
     for (let i = 0; i < t.s.length; i += 4) {
       const x = t.s[i + 3];
-      st.push({ sid: t.s[i], a: t.s[i + 1], d: t.s[i + 2], L: x >> 3, op: !!(x & 1), b: !!(x & 6), th: !!(x & 4) });
+      st.push({ sid: t.s[i], a: t.s[i + 1], d: t.s[i + 2], L: x >> 4, op: !!(x & 1), b: !!(x & 6), th: !!(x & 4), pass: !!(x & 8) });
     }
     const tr = { n: t.n, k: t.k, fast: !!t.f, dn: t.dn, cars: t.c, cr: t.cr, note: t.nt, partners: t.p, stops: st, nx: t.nx, pv: t.pv,
       first: st[0].d, last: st[st.length - 1].a };
@@ -158,12 +163,170 @@ export const ACTIVE_STATUS = ['在籍', '運用', '運用中', '', undefined, nu
 export function isActiveFormation(f) { return ACTIVE_STATUS.includes(f.status); }
 
 const cache = new Map();
-export function invalidate() { cache.clear(); }
+export function invalidate() { cache.clear(); ROTSIM = null; }
+
+// ---------------------------------------------------------------- ローテーション
+// data/rotations.txt(1行目: 車庫名,ローテーション / 以降: 桜湖,T019→T036→回送→T043)
+// 前の運用の終了駅と次の運用の起点駅が違うのに「回送」が無いローテーションは無効(その運用は運休)
+export function parseRotations(text) {
+  const rotations = [], errors = [], invalid = [];
+  const seen = {};
+  String(text || '').replace(/^﻿/, '').split(/\r?\n/).forEach((line, i) => {
+    const ln = line.trim();
+    if (!ln || ln.startsWith('#')) return;
+    const c = ln.indexOf(',');
+    if (c < 0) { errors.push(`${i + 1}行目: 「車庫名,ローテーション」の形式ではありません`); return; }
+    const depot = ln.slice(0, c).trim(); const body = ln.slice(c + 1).trim();
+    if (depot === '車庫名') return; // 見出し
+    const tokens = body.split(/→|->|＞|>/).map((x) => x.trim()).filter(Boolean);
+    const steps = []; // {op} | {deadhead, from, to}
+    for (const tk of tokens) {
+      const m = /^回送(?:[(（]\s*([^→\-＞>)）]+?)\s*(?:〜|～|-|ー|から)\s*([^)）]+?)\s*[)）])?$/.exec(tk);
+      if (m) steps.push({ deadhead: true, from: m[1] || null, to: m[2] || null });
+      else steps.push({ op: tk.toUpperCase() });
+    }
+    const ops = steps.filter((x) => x.op).map((x) => x.op);
+    const row = i + 1;
+    if (!depot || !ops.length) { errors.push(`${row}行目: 車庫名か運用が空です`); return; }
+    const probs = [];
+    const bad = ops.filter((o) => !D.opById[o]);
+    if (bad.length) probs.push(`存在しない運用 ${bad.join('、')}`);
+    const dup = ops.filter((o) => seen[o]);
+    if (dup.length) probs.push(`${dup.join('、')} は ${dup.map((o) => seen[o]).join('、')}行目にもあります`);
+    const types = [...new Set(ops.filter((o) => D.opById[o]).map((o) => D.opById[o].type))];
+    if (types.length > 1) probs.push(`車種の違う運用が混在しています(${types.join('・')})`);
+    // 前日の終了駅と翌日の起点駅
+    const links = [];
+    let prev = null, dh = null;
+    for (const st of steps) {
+      if (st.deadhead) { dh = st; continue; }
+      if (prev && D.opById[prev] && D.opById[st.op]) {
+        const a = opEnds(prev).to, b = opEnds(st.op).from;
+        if (a !== b && !dh) probs.push(`${prev}(${a}終了)→${st.op}(${b}起点)の間に回送がありません`);
+        if (dh && dh.from && (dh.from !== a || dh.to !== b)) probs.push(`${prev}→${st.op}の回送区間(${dh.from}〜${dh.to})が${a}〜${b}と一致しません`);
+        links.push({ from: prev, to: st.op, a, b, deadhead: !!dh });
+      } else if (dh && !prev) probs.push('先頭に回送があります');
+      prev = st.op; dh = null;
+    }
+    if (dh) probs.push('末尾に回送があります(ローテーション終了後の行き先はランダムのため不要です)');
+    const rot = { line: row, depot, ops, steps, links, type: types[0] || '?' };
+    if (probs.length) {
+      errors.push(`${row}行目(${depot}): ${probs.join(' / ')} → このローテーションは無効です`);
+      invalid.push({ ...rot, problems: probs });
+      return;
+    }
+    ops.forEach((o) => (seen[o] = row));
+    rotations.push(rot);
+  });
+  return { rotations, errors, invalid };
+}
+export function rotationText() { return LS.get('sj.rotLocal', null) ?? D.rotationText; }
+export function rotations() {
+  if (!cache.has('rot')) cache.set('rot', parseRotations(rotationText()));
+  return cache.get('rot');
+}
+export const rotationMode = () => rotations().rotations.length > 0 || rotations().invalid.length > 0;
+// 運用の出庫駅・入庫駅(つながりの確認用)
+export function opEnds(id) { const l = D.opById[id].legs; return { from: l[0][2], to: l[l.length - 1][4] }; }
+
+// ローテーションの状態を基準日から1日ずつ進める。
+// 各ローテーションには毎日「n日目」の編成がそれぞれ1本ずついる。最終日を終えた編成と車庫の予備は、
+// 翌日に各ローテーションの1日目へランダムに入る(日付から決まる乱数なので誰が見ても同じ結果)。
+const ROT_EPOCH = '2026-01-01';
+let ROTSIM = null;
+function rotGroups() {
+  const forms = formations();
+  const { rotations: rots } = rotations();
+  const byId = (a, b) => String(a.id).localeCompare(String(b.id), 'ja', { numeric: true });
+  const groups = {};
+  for (const r of rots) (groups[r.depot + '|' + r.type] ||= { depot: r.depot, type: r.type, rots: [], members: [] }).rots.push(r);
+  for (const g of Object.values(groups)) g.members = forms.filter((f) => f.type === g.type && (f.depot || '') === g.depot && isActiveFormation(f)).sort(byId).map((f) => f.id);
+  return groups;
+}
+function rotState(date) {
+  const target = dayIndex(date) - dayIndex(ROT_EPOCH);
+  if (!ROTSIM || ROTSIM.ver !== cache.get('rotver')) {
+    cache.set('rotver', Math.random());
+    const groups = rotGroups();
+    // 基準日: 編成番号の順に 1日目,2日目… と配置
+    const st = {};
+    for (const [key, g] of Object.entries(groups)) {
+      let k = 0;
+      st[key] = g.rots.map((r) => r.ops.map(() => g.members[k++] ?? null));
+    }
+    ROTSIM = { ver: cache.get('rotver'), groups, days: [st] };
+  }
+  const { groups, days } = ROTSIM;
+  if (target <= 0) return { groups, st: days[0] };
+  while (days.length <= target) {
+    const n = days.length; const prev = days[n - 1];
+    const ds = addDays(ROT_EPOCH, n);
+    const next = {};
+    for (const [key, g] of Object.entries(groups)) {
+      const P = prev[key];
+      const busy = new Set(P.flatMap((pos, ri) => pos.slice(0, -1)).filter(Boolean)); // 翌日も続ける編成
+      const pool = g.members.filter((id) => !busy.has(id));
+      // 乱数で並べ替えて各ローテーションの1日目へ(離脱中の編成の分は当日、予備編成が代走)
+      const r = rng(`rot|${ds}|${key}`);
+      for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+      next[key] = g.rots.map((rot, ri) => [pool.shift() ?? null, ...P[ri].slice(0, -1)]);
+    }
+    days.push(next);
+  }
+  return { groups, st: days[target] };
+}
+// 編成がいまどのローテーションの何日目か
+export function rotationPosition(fid, date) {
+  if (!rotationMode()) return null;
+  const { groups, st } = rotState(date);
+  for (const [key, g] of Object.entries(groups)) st[key]?.forEach((pos, ri) => pos.forEach((id, p) => { if (id === fid) fid = { rot: g.rots[ri], day: p + 1 }; }));
+  return typeof fid === 'object' ? fid : null;
+}
+function rotationAssignment(date, forms) {
+  const opForm = {}; const formOp = {}; const virt = []; const formRot = {};
+  const wd = withdrawals(date);
+  const { groups, st } = rotState(date);
+  const byId = (a, b) => String(a.id).localeCompare(String(b.id), 'ja', { numeric: true });
+  for (const op of D.ops) opForm[op.id] = null; // ローテーション外・無効なローテーションは運休
+  const sparesByDepot = {};
+  for (const [key, g] of Object.entries(groups)) {
+    const need = []; const placed = new Set();
+    g.rots.forEach((r, ri) => r.ops.forEach((op, p) => {
+      const id = st[key][ri][p];
+      if (id) { formRot[id] = { rot: r, day: p + 1 }; placed.add(id); }
+      if (id && !wd[id]) { opForm[op] = id; formOp[id] = op; } else need.push(op);
+    }));
+    // 車庫の予備(どのローテーションにもいない編成)で、離脱・不足分を埋める
+    const spares = g.members.filter((id) => !placed.has(id) && !wd[id]);
+    for (const op of need) { const id = spares.shift(); if (id) { opForm[op] = id; formOp[id] = op; } }
+    sparesByDepot[key] = spares;
+  }
+  if (CONFIG.allowDoubleTwoCar !== false) {
+    for (const g of Object.values(groups).filter((x) => x.type === 'B')) {
+      const twos = (sparesByDepot[g.depot + '|C'] ||= forms.filter((f) => f.type === 'C' && (f.depot || '') === g.depot && isActiveFormation(f) && !wd[f.id] && !formOp[f.id]).sort(byId).map((f) => f.id));
+      for (const op of g.rots.flatMap((r) => r.ops)) {
+        if (opForm[op] || twos.length < 2) continue;
+        const fa = forms.find((f) => f.id === twos[0]), fb = forms.find((f) => f.id === twos[1]); twos.splice(0, 2);
+        const id = `${fa.id}+${fb.id}`;
+        virt.push({ id, type: 'B', series: `${fa.series}×2`, cars: (fa.cars || 2) + (fb.cars || 2), status: '在籍', pair: [fa.id, fb.id], note: '2両編成×2', depot: g.depot });
+        opForm[op] = id; formOp[fa.id] = op; formOp[fb.id] = op;
+      }
+    }
+  }
+  return { opForm, formOp, formById: Object.fromEntries([...forms, ...virt].map((f) => [f.id, f])), doubled: virt.length, formRot, mode: 'rotation' };
+}
+// 編成の今後の運用予定(ローテーション)
+export function formationSchedule(fid, date, days = 7) {
+  const out = [];
+  for (let i = 0; i < days; i++) { const d = addDays(date, i); out.push({ date: d, op: assignment(d).formOp[fid] || null, wd: withdrawals(d)[fid] || null }); }
+  return out;
+}
 
 export function assignment(date) {
   const key = 'asg:' + date;
   if (cache.has(key)) return cache.get(key);
   const forms = formations();
+  if (rotationMode()) { const r = rotationAssignment(date, forms); cache.set(key, r); return r; }
   const opForm = {}; const formOp = {};
   const di = dayIndex(date);
   const prefs = CONFIG.seriesPreference || {};
@@ -271,7 +434,8 @@ export function isCancelled(n, date) {
 // ---------------------------------------------------------------- incidents (運転見合わせ)
 function randomIncidents(date) {
   const R = D.sim.randomIncident || CONFIG.randomIncident;
-  return randomIncidentsFor(date, D.lines.map((l) => ({ id: l.id, n: l.stations.length })), R, LS.get('sj.prob', null));
+  D.runs ||= lineRuns(D.raw);
+  return randomIncidentsFor(date, D.lines.map((l) => ({ id: l.id, n: l.stations.length })), R, LS.get('sj.prob', null), D.runs, (n) => !isCancelled(n, date));
 }
 // 車両の自動離脱(検査・事故)
 export function withdrawals(date) {
@@ -309,6 +473,9 @@ export function incidentsKnown(date, nowMin) {
   if (date > t.date) return [];
   const cut = date < t.date ? Infinity : (nowMin ?? t.min);
   return incidentsAll(date).filter((i) => i.start <= cut);
+}
+export function incidentCause(i) {
+  return i.train ? `${i.train}列車の${i.reason}` : i.reason;
 }
 export function incidentSection(i) {
   const l = D.lineById[i.line]; return [stName(l.stations[i.a]), stName(l.stations[i.b])];
@@ -382,8 +549,14 @@ export function posAt(tr, t) {
     if (nx && t > s.d && t < nx.a) {
       const L = nx.L; const idx = D.lineIdx[L];
       const p0 = idx.get(s.sid), p1 = idx.get(nx.sid);
-      const f = (t - s.d) / (nx.a - s.d);
-      return { from: i, to: i + 1, L, idx: p0 + (p1 - p0) * f, dir: p1 > p0 ? 1 : 0, b: nx.b };
+      let f;
+      const h = s.hold;
+      if (h && h[1] > h[0]) {
+        const run = Math.max(0.01, nx.a - s.d - (h[1] - h[0]));
+        f = t < h[0] ? (t - s.d) / run : t < h[1] ? (h[0] - s.d) / run : (t - s.d - (h[1] - h[0])) / run;
+      } else f = (t - s.d) / (nx.a - s.d);
+      f = Math.max(0, Math.min(1, f));
+      return { from: i, to: i + 1, L, idx: p0 + (p1 - p0) * f, dir: p1 > p0 ? 1 : 0, b: nx.b, stopped: !!(h && t >= h[0] && t < h[1]) };
     }
   }
   return null;
@@ -395,15 +568,31 @@ function dirOfEdge(tr, j) {
 }
 
 // 現在走行中の列車一覧
+// 遅れと見合わせ中かどうか(シミュレーション結果から)
+function delayInfo(act, p, t, date) {
+  const st = act.stops;
+  const k = p.at != null ? p.at : p.to;
+  const x = st[k] || st[st.length - 1];
+  const delay = p.at != null ? Math.max(0, x.d - (x.sd ?? x.d)) : Math.max(0, x.a - (x.sa ?? x.a));
+  let held = !!p.stopped;
+  if (!held && delay >= 1) {
+    for (const i of incidentsKnown(date)) {
+      if (i.line !== p.L || !(t >= i.start && t < i.end)) continue;
+      if (p.idx >= i.a - 1 && p.idx <= i.b + 1) { held = true; break; }
+    }
+  }
+  return { delay, held, t };
+}
 export function activeTrains(date, nowMin) {
   const out = [];
   for (const tr of D.trains) {
     if (isCancelled(tr.n, date)) continue;
+    let act = null;
     for (const base of [nowMin, nowMin + 1440, nowMin - 1440]) {
-      if (base < tr.first - 1 || base > tr.last + 200) continue;
-      const ef = effTime(tr, date, base);
-      const p = posAt(tr, ef.t);
-      if (p) { out.push({ tr, p, ef }); break; }
+      if (base < tr.first - 1 || base > tr.last + 400) continue;
+      act ||= actualTrain(tr, date, nowMin);
+      const p = posAt(act, base);
+      if (p) { out.push({ tr, act, p, ef: delayInfo(act, p, base, date) }); break; }
     }
   }
   return out;
@@ -413,16 +602,22 @@ export function activeTrains(date, nowMin) {
 export function trainNowState(tr, date) {
   const t = now();
   if (isCancelled(tr.n, date)) return { status: 'cancel' };
-  if (date !== t.date) return { status: 'other' };
+  if (date !== t.date) return { status: 'other', act: actualTrain(tr, date, t.min) };
+  const act = actualTrain(tr, date, t.min);
   for (const base of [t.min, t.min + 1440]) {
-    const ef = effTime(tr, date, base);
-    const p = posAt(tr, ef.t);
-    if (p) return { status: ef.held ? 'held' : 'run', p, ef };
+    const p = posAt(act, base);
+    if (p) { const ef = delayInfo(act, p, base, date); return { status: ef.held ? 'held' : 'run', p, ef, act }; }
   }
-  const ef = effTime(tr, date, t.min);
-  if (ef.t < tr.first) return { status: 'before', ef };
-  return { status: 'done', ef };
+  if (t.min < act.first) return { status: 'before', act, ef: { delay: Math.max(0, act.stops[0].d - act.stops[0].sd) } };
+  return { status: 'done', act, ef: { delay: 0 } };
 }
+// 駅での発車予定(遅れ反映)。si は時刻表の stops の番号
+export function expectedAt(tr, date, si) {
+  const act = actualTrain(tr, date, now().min);
+  const x = act.stops.find((y) => y.si === si);
+  return x ? { d: x.d, a: x.a, delay: Math.max(0, x.d - (x.sd ?? x.d)) } : null;
+}
+export { trackReady };
 
 // ---------------------------------------------------------------- line status
 export function lineStatus(L, date, nowMin) {
@@ -439,18 +634,38 @@ export function lineStatus(L, date, nowMin) {
 // ---------------------------------------------------------------- station timetable
 export function departures(sid, date) {
   const out = [];
+  const coupled = new Map(); // 発時刻 → この駅で併結されて発車する相手列車
   for (const tr of D.trains) {
     const st = tr.stops;
     for (let i = 0; i < st.length; i++) {
       const s = st[i];
-      if (s.sid !== sid || s.op || s.b) continue;
+      if (s.sid !== sid || s.op) continue;
+      if (s.b) {
+        if (!s.th && st[i + 1] && st[i + 1].b && !st[i + 1].th) {
+          let j = i + 1; while (st[j + 1] && st[j + 1].b && !st[j + 1].th) j++;
+          const k = Math.round(s.d); (coupled.get(k) || coupled.set(k, []).get(k)).push({ tr, until: D.stations[st[j].sid] });
+        }
+        continue;
+      }
       const nx = st[i + 1];
       if (!nx) { out.push({ tr, i, t: s.a, arrOnly: true, L: s.L, dir: dirOfEdge(tr, i) }); continue; }
       out.push({ tr, i, t: s.d, L: nx.L, dir: dirOfEdge(tr, i + 1) });
     }
   }
+  for (const d of out) {
+    if (d.arrOnly) continue;
+    const cands = coupled.get(Math.round(d.t)) || [];
+    const w = cands.filter((c) => c.tr.n !== d.tr.n && (d.tr.partners.includes(c.tr.n) || c.tr.partners.includes(d.tr.n)));
+    d.with = w.map((c) => c.tr); d.until = w.map((c) => c.until);
+  }
   out.sort((a, b) => a.t - b.t);
   return out;
+}
+// 行先(番号が変わる直通は最終行先、併結は相手の行先も)
+export function destsOf(d) {
+  const last = (tr) => D.stations[tr.stops[tr.stops.length - 1].sid];
+  const list = [last(d.tr), ...(d.with || []).map(last)];
+  return [...new Set(list)];
 }
 
 // ---------------------------------------------------------------- routing (CSA)

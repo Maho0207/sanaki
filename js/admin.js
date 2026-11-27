@@ -1,6 +1,6 @@
 // 管理ページ(テスト用:変更はこの端末のブラウザだけに保存されます)
 import { CONFIG } from './config.js';
-import { D, now, fmt, stName, LS, invalidate, setSim, clearSim, incidentsAll, incidentSection, formations, OP_TYPE_NAME, assignment, parseHM, withdrawals } from './core.js';
+import { D, now, fmt, stName, LS, invalidate, setSim, clearSim, incidentsAll, incidentSection, formations, OP_TYPE_NAME, assignment, parseHM, withdrawals, rotationText, parseRotations } from './core.js';
 import { esc, $, $$, lineBadge, toast } from './ui.js';
 
 export function pageAdmin(el) {
@@ -33,11 +33,19 @@ export function pageAdmin(el) {
       <div class="row"><input id="iprob" class="inp" type="number" step="0.005" min="0" max="1" style="max-width:120px" value="${LS.get('sj.prob', null) ?? D.sim.randomIncident?.probabilityPerHour}"><span class="small muted">1路線・1時間あたり(既定 ${D.sim.randomIncident?.probabilityPerHour}・data/sim.json)</span><button class="btn" id="iprobset">この端末に適用</button></div>
     </section>
 
+    <section class="card"><h3>運用ローテーション</h3>
+      <p class="small muted">GitHub の <code>data/rotations.txt</code> と同じ書式です(1行目「車庫名,ローテーション」、以降「車庫名,運用→運用→…」)。ここで編集して「この端末で試す」と自分のブラウザだけに反映され、「rotations.txt をダウンロード」したファイルをアップロードすると全員に反映されます。</p>
+      <textarea id="rtext" class="inp code" rows="8" spellcheck="false">${esc(rotationText())}</textarea>
+      <div id="rcheck" class="small"></div>
+      <div class="row"><button class="btn primary" id="rapply">この端末で試す</button><button class="btn" id="rdl">rotations.txt をダウンロード</button><button class="btn danger" id="rreset">公開中の内容に戻す</button><a class="btn" href="#/fleet?view=rot">ローテーション表示へ</a></div>
+    </section>
+
     <section class="card"><h3>編成の登録・管理</h3>
-      <p class="small muted">状態を「検査」「休車」「廃車」にした編成は運用に入りません(手動の長期離脱)。このほか data/sim.json の設定で、定期検査・全般検査・事故による離脱が自動で発生します(古い編成ほど事故・故障が起きやすくなります)。「固定運用」に運用番号を入れるとその運用に優先して充当します。${LS.get('sj.formLocal', null) ? '<b class="warn">この端末ではローカル編集中の編成データを使用しています。</b>' : ''}</p>
+      <p class="small muted">状態を「検査」「休車」「廃車」にした編成は運用に入りません(手動の長期離脱)。このほか data/sim.json の設定で、定期検査・全般検査・事故による離脱が自動で発生します(古い編成ほど事故・故障が起きやすくなります)。「固定運用」に運用番号を入れるとその運用に優先して充当します(ローテーションを使わない自動割り当てのときのみ)。「所属車庫」はローテーションの車庫名と同じにします。${LS.get('sj.formLocal', null) ? '<b class="warn">この端末ではローカル編集中の編成データを使用しています。</b>' : ''}</p>
       <div class="row">
         <select id="ftype" class="inp" style="max-width:180px">${['T', 'B', 'C', 'L'].map((ty) => `<option value="${ty}">${OP_TYPE_NAME[ty]}</option>`).join('')}</select>
-        <input id="fq" class="inp" placeholder="編成番号で絞り込み" style="max-width:200px">
+        <input id="fq" class="inp" placeholder="編成番号・車庫で絞り込み" style="max-width:200px">
+        <button class="btn small" id="fbulk">表示中の編成の車庫を一括設定</button>
         <span class="spacer"></span>
         <button class="btn" id="fadd">＋ 編成を追加</button>
       </div>
@@ -75,12 +83,27 @@ export function pageAdmin(el) {
     $('#inclist').innerHTML = all.length ? `<table class="tbl"><thead><tr><th>路線</th><th>区間</th><th>時間</th><th>理由</th><th>種類</th><th></th></tr></thead><tbody>${all.map((i) => {
       const [a, b] = incidentSection(i);
       const state = i.start > tt.min ? '<span class="muted">未発生</span>' : i.end > tt.min ? '<span class="pill stop">発生中</span>' : '<span class="muted">終了</span>';
-      return `<tr><td>${lineBadge(i.line)}</td><td>${esc(a)}〜${esc(b)}</td><td>${fmt(i.start)}〜${isFinite(i.end) ? fmt(i.end) : '未定'} ${state}</td><td>${esc(i.reason)}</td><td>${{ random: 'ランダム', manual: '公開データ', local: 'この端末' }[i.source]}</td>
+      return `<tr><td>${lineBadge(i.line)}</td><td>${esc(a)}〜${esc(b)}</td><td>${fmt(i.start)}〜${isFinite(i.end) ? fmt(i.end) : '未定'} ${state}</td><td>${esc(i.reason)}${i.train ? `<br><small><a href="#/train/${encodeURIComponent(i.train)}">${esc(i.train)}列車</a></small>` : ''}</td><td>${{ random: 'ランダム', manual: '公開データ', local: 'この端末' }[i.source]}</td>
         <td>${i.source === 'local' ? `<button class="btn small" data-del="${esc(i.id)}">削除</button>` : ''}</td></tr>`;
     }).join('')}</tbody></table>` : '<p class="muted small">本日の見合わせはありません。</p>';
     $$('[data-del]').forEach((b) => (b.onclick = () => { LS.set('sj.localInc', LS.get('sj.localInc', []).filter((x) => x.id !== b.dataset.del)); invalidate(); drawInc(); }));
   };
   drawInc();
+
+  // --- rotations
+  const rcheck = () => {
+    const r = parseRotations($('#rtext').value);
+    const n = r.rotations.reduce((a, x) => a + x.ops.length, 0);
+    $('#rcheck').innerHTML = `有効 ${r.rotations.length}本・${n}運用${r.invalid.length ? `・<b class="warn">無効 ${r.invalid.length}本</b>` : ''}(全${D.ops.length}運用中 ${D.ops.length - n} 運用が運休)` + (r.errors.length ? `<ul class="warn">${r.errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul>` : '');
+  };
+  $('#rtext').oninput = rcheck; rcheck();
+  $('#rapply').onclick = () => { LS.set('sj.rotLocal', $('#rtext').value); invalidate(); toast('この端末に反映しました'); };
+  $('#rreset').onclick = () => { LS.del('sj.rotLocal'); invalidate(); location.reload(); };
+  $('#rdl').onclick = () => {
+    let txt = $('#rtext').value.replace(/\r?\n/g, '\r\n');
+    if (!/^\s*車庫名\s*,/.test(txt)) txt = '車庫名,ローテーション\r\n' + txt;
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); a.download = 'rotations.txt'; a.click();
+  };
 
   // --- formations
   let forms = JSON.parse(JSON.stringify(formations()));
@@ -89,23 +112,30 @@ export function pageAdmin(el) {
   const drawF = () => {
     const ty = $('#ftype').value; const q = $('#fq').value.trim().toUpperCase();
     const list = forms.map((f, i) => ({ f, i })).filter(({ f }) => f.type === ty && (!q || String(f.id).toUpperCase().includes(q)));
-    $('#ftable').innerHTML = `<table class="tbl"><thead><tr><th>編成番号</th><th>形式</th><th>両数</th><th>製造年</th><th>状態</th><th>固定運用</th><th>本日</th><th></th></tr></thead><tbody>${list.map(({ f, i }) => `<tr>
+    $('#ftable').innerHTML = `<table class="tbl"><thead><tr><th>編成番号</th><th>形式</th><th>両数</th><th>製造年</th><th>所属車庫</th><th>状態</th><th>固定運用</th><th>本日</th><th></th></tr></thead><tbody>${list.map(({ f, i }) => `<tr>
       <td><b>${esc(f.id)}</b></td><td>${esc(f.series)}</td><td>${f.cars}</td>
       <td><input class="inp sm" type="number" min="1900" max="2100" data-i="${i}" data-k="built" value="${esc(f.built || '')}" style="width:76px"></td>
+      <td><input class="inp sm" data-i="${i}" data-k="depot" value="${esc(f.depot || '')}" placeholder="例 桜湖" list="depotlist" style="width:90px"></td>
       <td><select class="inp sm" data-i="${i}" data-k="status">${['在籍', '検査', '休車', '廃車'].map((s) => `<option ${(f.status || '在籍') === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
       <td><input class="inp sm" data-i="${i}" data-k="pin" value="${esc(f.pin || '')}" placeholder="例 ${ty}001" style="width:90px"></td>
       <td class="small">${wd[f.id] ? `<span class="pill ${wd[f.id].kind === 'accident' ? 'stop' : 'delay'}">${esc(wd[f.id].name)}</span>` : asg.formOp[f.id] ? `<a href="#/fleet/${asg.formOp[f.id]}">${asg.formOp[f.id]}</a>` : '<span class="muted">予備</span>'}</td>
-      <td><button class="btn small" data-rm="${i}">削除</button></td></tr>`).join('')}</tbody></table><p class="small muted">${list.length}編成</p>`;
+      <td><button class="btn small" data-rm="${i}">削除</button></td></tr>`).join('')}</tbody></table><p class="small muted">${list.length}編成</p><datalist id="depotlist">${[...new Set(forms.map((f) => f.depot).filter(Boolean))].map((d) => `<option value="${esc(d)}">`).join('')}</datalist>`;
     $$('#ftable [data-k]').forEach((inp) => (inp.onchange = () => { const v = inp.value.trim(); forms[+inp.dataset.i][inp.dataset.k] = inp.dataset.k === 'built' ? (v ? Number(v) : '') : v; }));
     $$('#ftable [data-rm]').forEach((b) => (b.onclick = () => { forms.splice(+b.dataset.rm, 1); drawF(); }));
   };
   $('#ftype').onchange = drawF; $('#fq').oninput = drawF; drawF();
+  $('#fbulk').onclick = () => {
+    const ty = $('#ftype').value; const q = $('#fq').value.trim().toUpperCase();
+    const list = forms.filter((f) => f.type === ty && (!q || String(f.id).toUpperCase().includes(q) || String(f.depot || '').includes(q)));
+    const d = prompt(`表示中の ${list.length} 編成の所属車庫(空欄で解除)`, ''); if (d === null) return;
+    list.forEach((f) => (f.depot = d.trim())); drawF(); toast('設定しました(「変更をこの端末に適用」で反映)');
+  };
   $('#fadd').onclick = () => {
     const ty = $('#ftype').value;
     const id = prompt('新しい編成番号', ''); if (!id) return;
     if (forms.some((f) => f.id === id)) return toast('同じ編成番号があります', 'err');
     const sample = forms.find((f) => f.type === ty) || { series: '', cars: ty === 'C' || ty === 'L' ? 2 : 4 };
-    forms.push({ id, type: ty, series: sample.series, cars: sample.cars, built: Number(t.date.slice(0, 4)), status: '在籍', pin: '', note: '' }); drawF();
+    forms.push({ id, type: ty, series: sample.series, cars: sample.cars, built: Number(t.date.slice(0, 4)), depot: sample.depot || '', status: '在籍', pin: '', note: '' }); drawF();
   };
   $('#fapply').onclick = () => { LS.set('sj.formLocal', forms); invalidate(); toast('この端末に適用しました'); };
   $('#freset').onclick = () => { LS.del('sj.formLocal'); invalidate(); location.reload(); };
@@ -114,7 +144,7 @@ export function pageAdmin(el) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'formations.json'; a.click();
   };
   $('#ftsv').onclick = async () => {
-    const tsv = ['編成番号\t車種\t形式\t両数\t状態\t固定運用\t備考\t製造年', ...forms.map((f) => [f.id, f.type, f.series, f.cars, f.status || '在籍', f.pin || '', f.note || '', f.built || ''].join('\t'))].join('\n');
+    const tsv = ['編成番号\t車種\t形式\t両数\t状態\t固定運用\t備考\t製造年\t所属車庫', ...forms.map((f) => [f.id, f.type, f.series, f.cars, f.status || '在籍', f.pin || '', f.note || '', f.built || '', f.depot || ''].join('\t'))].join('\n');
     try { await navigator.clipboard.writeText(tsv); toast(`${forms.length}行をコピーしました。「編成」シートのA1に貼り付けてください`); } catch { toast('コピーできませんでした', 'err'); }
   };
 }

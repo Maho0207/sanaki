@@ -75,6 +75,7 @@ main { min-height: 70vh; padding-bottom: 40px; }
 .netmap .mt { stroke: #fff; stroke-width: 1.5; }
 .netmap .mt.ltd { fill: var(--ltd); } .netmap .mt.rap { fill: var(--rap); } .netmap .mt.exp { fill: var(--exp); } .netmap .mt.sexp { fill: var(--sexp); } .netmap .mt.loc { fill: var(--loc); }
 .netmap .mt.held { stroke: var(--stop); stroke-width: 3; }
+.netmap .seaname { font-size: 15px; fill: #8aa07a; font-weight: 700; letter-spacing: .3em; opacity: .7; }
 .netmap .mbadge text { fill: #fff; font-weight: 900; font-size: 13px; }
 
 /* cards */
@@ -204,7 +205,7 @@ main { min-height: 70vh; padding-bottom: 40px; }
 .stops li.opstop { opacity: .6; } .stops li.coupled a { font-style: italic; }
 .stops .runningtag { display: block; padding: 0 0 0 100px; } .stops .runningtag span { background: var(--navy); color: #fff; font-size: .72rem; padding: 1px 8px; border-radius: 99px; }
 .nowtag { background: var(--sun); color: var(--navy); font-size: .7rem; font-weight: 900; padding: 1px 6px; border-radius: 4px; margin-left: 6px; }
-.kv { display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; margin: 0; font-size: .92rem; }
+.kv { display: grid; grid-template-columns: 112px 1fr; gap: 6px 10px; margin: 0; font-size: .92rem; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; }
 
 /* tables */
@@ -336,3 +337,34 @@ main { min-height: 70vh; padding-bottom: 40px; }
 .kchip.many b { color: var(--ok); } .kchip.some b { color: var(--sea); } .kchip.few b { color: var(--delay); } .kchip.full { opacity: .55; } .kchip.full b { color: #999; }
 .kindsum { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .cartabs a .carleft { font-size: .6rem; opacity: .8; margin-top: 2px; }
+
+.rot { border-top: 1px solid var(--line); padding: 12px 0; }
+.rot-h { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.rot-seq { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+.opchip { background: var(--navy); color: #fff; border-radius: 6px; padding: 1px 8px; font-size: .8rem; font-weight: 700; }
+.opchip:hover { text-decoration: none; background: var(--sea); }
+.arr { color: var(--muted); margin: 0 2px; }
+.ok-text { color: var(--ok); }
+pre.code { background: #f1efe9; padding: 8px 12px; border-radius: 8px; font-size: .85rem; overflow-x: auto; }
+.sched { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.sched > div { border: 1px solid var(--line); border-radius: 8px; padding: 6px; text-align: center; display: grid; gap: 2px; font-size: .85rem; }
+.sched small { color: var(--muted); }
+@media (max-width: 600px) { .sched { grid-template-columns: repeat(4, 1fr); } }
+textarea.inp.code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .88rem; }
+.dhchip { background: #fff3bf; color: #7a5600; border: 1px dashed #e0b84a; border-radius: 6px; padding: 0 6px; font-size: .75rem; font-weight: 700; display: inline-flex; flex-direction: column; align-items: center; line-height: 1.2; }
+.dhchip small { font-size: .6rem; font-weight: 500; }
+.opchip.bad { background: var(--stop); }
+.oneman { display: inline-block; background: #e6fcf5; color: #087f5b; border: 1px solid #63e6be; border-radius: 4px; font-size: .72rem; font-weight: 900; padding: 1px 6px; }
+.oneman.sm { font-size: .62rem; padding: 0 4px; }
+.dlrow { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.bigfare { font-size: 1.4rem; color: var(--navy); }
+.farelist { max-height: 520px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.staffbar { background: #2b2f36; color: #fff; padding: 8px 14px; border-radius: 0 0 10px 10px; font-size: .88rem; }
+.staffbar b { background: var(--sun); color: #2b2f36; padding: 1px 8px; border-radius: 4px; margin-right: 8px; }
+.ticketno { display: inline-grid; place-items: center; min-width: 30px; height: 26px; background: #fff; border: 2px solid var(--navy); border-radius: 4px; }
+.fareboard { background: #111; color: #ffd43b; border-radius: 12px; padding: 12px; margin: 10px 0; font-variant-numeric: tabular-nums; }
+.fb-h { color: #fff; font-weight: 700; margin-bottom: 8px; }
+.fb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 4px; }
+.fb-c { background: #222; border-radius: 4px; padding: 4px; text-align: center; display: grid; }
+.fb-c span { color: #8ce99a; font-size: .72rem; } .fb-c b { font-size: 1rem; }
+.fb-c.self { opacity: .35; }

@@ -27,9 +27,9 @@ const TZ = 'Asia/Tokyo';
 const SHEETS = {
   rsv: { name: '予約', head: ['予約番号', '受付日時', '乗車日', '列車', '号車', '座席', '乗車駅', '降車駅', '乗車順', '降車順', '予約名', '連絡先', '料金(特急券)', '状態', '席種', '人数'] },
   stop: { name: '販売停止', head: ['乗車日(空欄=毎日)', '列車番号', '理由'] },
-  form: { name: '編成', head: ['編成番号', '車種(T/B/C/L)', '形式', '両数', '状態(在籍/検査/休車/廃車)', '固定運用', '備考', '製造年'] },
+  form: { name: '編成', head: ['編成番号', '車種(T/B/C/L)', '形式', '両数', '状態(在籍/検査/休車/廃車)', '固定運用', '備考', '製造年', '所属車庫'] },
   wd: { name: '離脱情報', head: ['ID', '編成番号', '車種', '形式', '製造年', '種別', '理由', '離脱日', '復帰予定日', '状態', '更新日時'] },
-  log: { name: '見合わせ記録', head: ['ID', '日付', '路線', '区間', '開始', '再開見込み', '理由', '種別', '状態', '更新日時'] },
+  log: { name: '見合わせ記録', head: ['ID', '日付', '路線', '区間', '開始', '再開見込み', '理由', '列車', '種別', '状態', '更新日時'] },
   inc: { name: '運行情報', head: ['日付(空欄=毎日)', '路線番号(1-9)', '区間(から)', '区間(まで)', '開始(HH:MM)', '再開見込み(HH:MM・空欄=未定)', '理由', '有効(TRUE/FALSE)'] },
 };
 const SEAT_LIMIT = 6;
@@ -93,7 +93,7 @@ function stoppedTrains(date) {
 function status() {
   const formations = rows('form').filter((r) => String(r[0]).trim()).map((r) => ({
     id: String(r[0]).trim(), type: String(r[1]).trim().toUpperCase(), series: String(r[2]), cars: Number(r[3]) || (String(r[1]).toUpperCase() === 'C' ? 2 : 4),
-    status: String(r[4] || '在籍').trim(), pin: String(r[5] || '').trim(), note: String(r[6] || ''), built: Number(r[7]) || '',
+    status: String(r[4] || '在籍').trim(), pin: String(r[5] || '').trim(), note: String(r[6] || ''), built: Number(r[7]) || '', depot: String(r[8] || '').trim(),
   }));
   const incidents = rows('inc').filter((r) => r[1] !== '' && String(r[7]).toUpperCase() !== 'FALSE').map((r, i) => ({
     id: 'S' + (i + 2), date: d2s(r[0]) || undefined, line: Number(r[1]), from: String(r[2]).trim(), to: String(r[3]).trim(),
@@ -213,6 +213,7 @@ function syncStatus() {
     const stamp = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm');
     const sim = fetchJSON('data/sim.json');
     const lines = fetchJSON('data/lines.json');
+    const runs = lineRuns(fetchJSON('data/network.json'));
     const st = status();
     const forms = st.formations.length ? st.formations : fetchJSON('data/formations.json');
 
@@ -234,10 +235,10 @@ function syncStatus() {
     // ---- 見合わせ記録
     const lineById = {}; lines.forEach((l) => (lineById[l.id] = l));
     const stateOf = (a, b) => (a > t.min ? '予定' : b > t.min ? '発生中' : '終了');
-    const log = randomIncidentsFor(t.date, lines, sim.randomIncident, null)
+    const log = randomIncidentsFor(t.date, lines, sim.randomIncident, null, runs)
       .filter((i) => i.start <= t.min) // まだ起きていないものは記録しない
       .map((i) => ({ ID: i.id, '日付': t.date, '路線': lineById[i.line].name, '区間': lineById[i.line].stations[i.a] + '〜' + lineById[i.line].stations[i.b],
-        '開始': hm(i.start), '再開見込み': hm(i.end), '理由': i.reason, '種別': 'ランダム', '状態': stateOf(i.start, i.end), '更新日時': stamp }));
+        '開始': hm(i.start), '再開見込み': hm(i.end), '理由': i.reason, '列車': i.train || '', '種別': 'ランダム', '状態': stateOf(i.start, i.end), '更新日時': stamp }));
     let repo = [];
     try { repo = fetchJSON('data/incidents.json'); } catch (e) { repo = []; }
     const manual = repo.map((x, k) => Object.assign({ _id: 'J-' + (x.date || 'daily') + '-' + k }, x))
@@ -253,6 +254,7 @@ function syncStatus() {
 }
 
 // ================================================================== js/sim.js と同じ計算(変更するときは両方を揃える)
+// (gas/sync_sim.py で js/sim.js から自動コピー)
 function hashStr(str) {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
@@ -265,7 +267,47 @@ function rng(seed) {
 }
 function dayNo(ds) { const p = ds.split('-').map(Number); return Math.floor(Date.UTC(p[0], p[1] - 1, p[2]) / 86400000); }
 function dayStr(n) { const d = new Date(n * 86400000); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0'); }
-function randomIncidentsFor(date, lines, R, prob) {
+
+// 路線ごとの列車の走行区間(時刻表どおり)。network は data/network.json そのもの
+function lineRuns(network) {
+  const idx = {}; network.lines.forEach((l) => { idx[l.id] = {}; l.stations.forEach((s, i) => (idx[l.id][s] = i)); });
+  const out = {};
+  for (const t of network.trains) {
+    const s = t.s; let prev = null, cur = null;
+    for (let i = 0; i < s.length; i += 4) {
+      const e = { sid: s[i], a: s[i + 1], d: s[i + 2], L: s[i + 3] >> 4, b: (s[i + 3] & 6) !== 0 };
+      if (e.b) { prev = null; cur = null; continue; }   // 併結・直通区間は本務列車の側で数える
+      if (!cur || cur.L !== e.L) {
+        cur = { n: t.n, L: e.L, pts: [] }; (out[e.L] ||= []).push(cur);
+        if (prev && idx[e.L][prev.sid] != null) cur.pts.push([idx[e.L][prev.sid], prev.a, prev.d]);
+      }
+      cur.pts.push([idx[e.L][e.sid], e.a, e.d]);
+      prev = e;
+    }
+  }
+  for (const L in out) out[L] = out[L].filter((r) => r.pts.length > 1).sort((a, b) => (a.n < b.n ? -1 : a.n > b.n ? 1 : 0));
+  return out;
+}
+// 時刻 m に路線上を走っている列車と位置(駅の並び番号。駅間は小数)
+function trainsOnLineAt(runs, line, m) {
+  const out = [];
+  for (const r of runs[line] || []) {
+    const p = r.pts;
+    for (const base of [m, m + 1440]) {
+      if (base < p[0][2] || base > p[p.length - 1][1]) continue;
+      for (let i = 0; i < p.length; i++) {
+        if (base >= p[i][1] && base <= p[i][2]) { out.push({ n: r.n, idx: p[i][0] }); break; }
+        if (i + 1 < p.length && base > p[i][2] && base < p[i + 1][1]) { const f = (base - p[i][2]) / (p[i + 1][1] - p[i][2]); out.push({ n: r.n, idx: p[i][0] + (p[i + 1][0] - p[i][0]) * f }); break; }
+      }
+      break;
+    }
+  }
+  return out;
+}
+
+// lines: [{id, n(駅数)}]。runs を渡すと、列車に関係する事象はその時刻に走っている列車に紐づける
+// → [{id, line, a, b(駅の並び番号), start, end(運行日の分), reason, train?}]
+function randomIncidentsFor(date, lines, R, prob, runs, isRunning) {
   const p = prob == null ? R.probabilityPerHour : prob;
   if (!R.enabled || !(p > 0)) return [];
   const out = [];
@@ -277,13 +319,27 @@ function randomIncidentsFor(date, lines, R, prob) {
       const dur = R.minMinutes + Math.floor(r() * (R.maxMinutes - R.minMinutes + 1));
       const len = 1 + Math.floor(r() * 4);
       const i = Math.floor(r() * (l.n - len));
-      out.push({ id: 'R' + date + '-' + l.id + '-' + h, line: l.id, a: i, b: i + len, start, end: start + dur,
-        reason: R.reasons[Math.floor(r() * R.reasons.length)], source: 'random' });
+      const reasonRoll = r(), pickRoll = r(), trainRoll = r();
+      const ev = { id: 'R' + date + '-' + l.id + '-' + h, line: l.id, a: i, b: i + len, start, end: start + dur,
+        reason: R.reasons[Math.floor(reasonRoll * R.reasons.length)], source: 'random' };
+      if (runs && R.trainReasons && R.trainReasons.length && pickRoll < (R.trainShare ?? 0.5)) {
+        let cand = trainsOnLineAt(runs, l.id, start);
+        if (isRunning) cand = cand.filter((c) => isRunning(c.n));
+        if (cand.length) {
+          const c = cand[Math.floor(trainRoll * cand.length)];
+          const lo = Math.floor(c.idx), hi = Math.ceil(c.idx);
+          ev.a = Math.max(0, hi === lo ? lo - 1 : lo); ev.b = Math.min(l.n - 1, Math.max(ev.a + 1, hi === lo ? lo + 1 : hi));
+          ev.train = c.n;
+          ev.reason = R.trainReasons[Math.floor(reasonRoll * R.trainReasons.length)];
+        }
+      }
+      out.push(ev);
     }
   }
   return out;
 }
 
+// forms: [{id, built, status}] → { 編成番号: {kind, name, reason, from, to(復帰予定日), id} }
 function withdrawalsFor(date, forms, W) {
   const out = {};
   if (!W || !W.enabled) return out;
@@ -319,4 +375,14 @@ function withdrawalsFor(date, forms, W) {
   }
   return out;
 }
-
+// 次回の検査日(表示用)
+function nextInspection(date, f, W) {
+  const d = dayNo(date); const res = [];
+  for (const key of ['inspection', 'overhaul']) {
+    const I = W && W[key]; if (!I || !(I.intervalDays > 0)) continue;
+    const phase = hashStr(key + '|' + f.id) % I.intervalDays;
+    const k = (((d - phase) % I.intervalDays) + I.intervalDays) % I.intervalDays;
+    res.push({ name: I.name, date: dayStr(d - k + (k < I.days ? 0 : I.intervalDays)) });
+  }
+  return res;
+}

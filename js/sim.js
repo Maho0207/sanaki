@@ -14,8 +14,46 @@ export function rng(seed) {
 export function dayNo(ds) { const p = ds.split('-').map(Number); return Math.floor(Date.UTC(p[0], p[1] - 1, p[2]) / 86400000); }
 export function dayStr(n) { const d = new Date(n * 86400000); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0'); }
 
-// lines: [{id, n(駅数)}] → [{id, line, a, b(駅の並び番号), start, end(運行日の分), reason}]
-export function randomIncidentsFor(date, lines, R, prob) {
+// 路線ごとの列車の走行区間(時刻表どおり)。network は data/network.json そのもの
+export function lineRuns(network) {
+  const idx = {}; network.lines.forEach((l) => { idx[l.id] = {}; l.stations.forEach((s, i) => (idx[l.id][s] = i)); });
+  const out = {};
+  for (const t of network.trains) {
+    const s = t.s; let prev = null, cur = null;
+    for (let i = 0; i < s.length; i += 4) {
+      const e = { sid: s[i], a: s[i + 1], d: s[i + 2], L: s[i + 3] >> 4, b: (s[i + 3] & 6) !== 0 };
+      if (e.b) { prev = null; cur = null; continue; }   // 併結・直通区間は本務列車の側で数える
+      if (!cur || cur.L !== e.L) {
+        cur = { n: t.n, L: e.L, pts: [] }; (out[e.L] ||= []).push(cur);
+        if (prev && idx[e.L][prev.sid] != null) cur.pts.push([idx[e.L][prev.sid], prev.a, prev.d]);
+      }
+      cur.pts.push([idx[e.L][e.sid], e.a, e.d]);
+      prev = e;
+    }
+  }
+  for (const L in out) out[L] = out[L].filter((r) => r.pts.length > 1).sort((a, b) => (a.n < b.n ? -1 : a.n > b.n ? 1 : 0));
+  return out;
+}
+// 時刻 m に路線上を走っている列車と位置(駅の並び番号。駅間は小数)
+export function trainsOnLineAt(runs, line, m) {
+  const out = [];
+  for (const r of runs[line] || []) {
+    const p = r.pts;
+    for (const base of [m, m + 1440]) {
+      if (base < p[0][2] || base > p[p.length - 1][1]) continue;
+      for (let i = 0; i < p.length; i++) {
+        if (base >= p[i][1] && base <= p[i][2]) { out.push({ n: r.n, idx: p[i][0] }); break; }
+        if (i + 1 < p.length && base > p[i][2] && base < p[i + 1][1]) { const f = (base - p[i][2]) / (p[i + 1][1] - p[i][2]); out.push({ n: r.n, idx: p[i][0] + (p[i + 1][0] - p[i][0]) * f }); break; }
+      }
+      break;
+    }
+  }
+  return out;
+}
+
+// lines: [{id, n(駅数)}]。runs を渡すと、列車に関係する事象はその時刻に走っている列車に紐づける
+// → [{id, line, a, b(駅の並び番号), start, end(運行日の分), reason, train?}]
+export function randomIncidentsFor(date, lines, R, prob, runs, isRunning) {
   const p = prob == null ? R.probabilityPerHour : prob;
   if (!R.enabled || !(p > 0)) return [];
   const out = [];
@@ -27,8 +65,21 @@ export function randomIncidentsFor(date, lines, R, prob) {
       const dur = R.minMinutes + Math.floor(r() * (R.maxMinutes - R.minMinutes + 1));
       const len = 1 + Math.floor(r() * 4);
       const i = Math.floor(r() * (l.n - len));
-      out.push({ id: 'R' + date + '-' + l.id + '-' + h, line: l.id, a: i, b: i + len, start, end: start + dur,
-        reason: R.reasons[Math.floor(r() * R.reasons.length)], source: 'random' });
+      const reasonRoll = r(), pickRoll = r(), trainRoll = r();
+      const ev = { id: 'R' + date + '-' + l.id + '-' + h, line: l.id, a: i, b: i + len, start, end: start + dur,
+        reason: R.reasons[Math.floor(reasonRoll * R.reasons.length)], source: 'random' };
+      if (runs && R.trainReasons && R.trainReasons.length && pickRoll < (R.trainShare ?? 0.5)) {
+        let cand = trainsOnLineAt(runs, l.id, start);
+        if (isRunning) cand = cand.filter((c) => isRunning(c.n));
+        if (cand.length) {
+          const c = cand[Math.floor(trainRoll * cand.length)];
+          const lo = Math.floor(c.idx), hi = Math.ceil(c.idx);
+          ev.a = Math.max(0, hi === lo ? lo - 1 : lo); ev.b = Math.min(l.n - 1, Math.max(ev.a + 1, hi === lo ? lo + 1 : hi));
+          ev.train = c.n;
+          ev.reason = R.trainReasons[Math.floor(reasonRoll * R.trainReasons.length)];
+        }
+      }
+      out.push(ev);
     }
   }
   return out;
